@@ -1,0 +1,8 @@
+streamlit>=1.67
+matplotlib
+numpy
+pandas
+pypdf
+python-docx
+plotly
+openai
