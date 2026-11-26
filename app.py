@@ -40,6 +40,7 @@ from plotly.subplots import make_subplots
 
 APP_DIR = Path(__file__).resolve().parent
 LLM_MODEL = "gpt-4o-mini"
+MAX_UPLOAD_MB = 2      # the files the dashboard reads are small; bigger ones (judged_*, caches) are never sent
 CONTEXT_FILE = APP_DIR / "llm_context.md"
 PROMPT_FILE = APP_DIR / "system_prompt.txt"
 
@@ -839,7 +840,7 @@ def upload_panel(problem: str):
         section("Upload a folder from your computer",
                 "Choose your Eval folder, or a single model folder such as qwen_eval.")
         uploads = st.file_uploader("Evaluation folder", accept_multiple_files="directory", type=["csv", "md"],
-                                   key="eval_upload", label_visibility="collapsed")
+                                   key="eval_upload", label_visibility="collapsed", max_upload_size=MAX_UPLOAD_MB)
         if st.button("Show results", type="primary", disabled=not uploads, icon=":material/play_arrow:"):
             saved = save_upload(uploads)
             if saved is None:
@@ -848,7 +849,8 @@ def upload_panel(problem: str):
             else:
                 st.session_state["upload"] = saved
                 st.rerun()
-        st.caption("Only .csv and .md files are taken. Wait for the upload to finish before clicking Show results. "
+        st.caption(f"Only .csv and .md files up to {MAX_UPLOAD_MB} MB are taken. Larger files, such as the detailed judged_* tables, "
+                   "are not needed and are skipped. Files marked in red were skipped; that is expected. Wait for the upload to finish before clicking Show results. "
                    "Uploading copies the files to the machine running this app, as a temporary copy for your session only; "
                    "nothing is added to the code repository. To keep results entirely on your computer, run the app locally "
                    "with your Eval folder next to app.py.")
