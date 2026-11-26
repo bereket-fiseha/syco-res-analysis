@@ -5,6 +5,7 @@ Quantization x Sycophancy: results dashboard
 
 Run:      streamlit run app.py          (reads ./Eval/<model>_eval/ folders, e.g. Eval/qwen_eval, Eval/llama_eval)
           streamlit run app.py -- --dir /path/to/Eval     (or set EVAL_DIR)
+          If no results are found (e.g. on a hosted app), the page asks you to upload the folder from your computer.
 
 Input:    an Eval folder holding one subfolder per model, each written by Quantization_Sycophancy_Evaluation.ipynb (OUT_DIR).
           The app discovers the files by name, for every base model and judge it finds:
@@ -26,6 +27,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 import textwrap
 from html import escape
 from pathlib import Path
@@ -132,6 +134,29 @@ def discover(folder: str):
         else:
             runs.setdefault((slug, judge), {})[kind] = p
     return runs, sysfiles, valid
+
+
+def has_results(found) -> bool:
+    return found is not None and any("sycophancy_metrics" in files for files in found[0].values())
+
+
+def save_upload(uploads) -> tempfile.TemporaryDirectory | None:
+    """Copy an uploaded folder's evaluation files into a private temp folder, keeping one sub-folder per model.
+    Returns the temp folder (deleted along with the object), or None if the upload holds no sycophancy_metrics file."""
+    safe = lambda name: re.sub(r'[<>:"|?*\x00-\x1f]', "_", name)          # uploaded names are untrusted
+    wanted = []
+    for f in uploads:
+        parts = [x for x in f.name.replace("\\", "/").split("/") if x not in ("", ".", "..")]
+        if parts and "__judged_" not in parts[-1] and (FILE_RE.match(parts[-1]) or VALID_RE.match(parts[-1])):
+            wanted.append((safe(parts[-2]) if len(parts) > 1 else "files", safe(parts[-1]), f))
+    if not any("__sycophancy_metrics__" in name for _, name, _ in wanted):
+        return None
+    tmp = tempfile.TemporaryDirectory(prefix="eval_upload_")
+    root = Path(tmp.name)
+    for sub_folder, name, f in wanted:
+        (root / sub_folder).mkdir(exist_ok=True)
+        (root / sub_folder / name).write_bytes(f.getvalue())
+    return tmp
 
 
 @st.cache_data(show_spinner=False)
@@ -805,6 +830,30 @@ def variant_card(run, v, i):
             html(f'<div class="facts">{rows}</div>')
 
 
+def upload_panel(problem: str):
+    """Shown instead of the dashboard when there is nothing to read."""
+    html('<div class="page-head"><div class="eyebrow">Quantization × Sycophancy</div>'
+         '<div class="page-title">Load your evaluation results</div></div>')
+    st.info(problem, icon=":material/folder_off:")
+    with card("upload"):
+        section("Upload a folder from your computer",
+                "Choose your Eval folder, or a single model folder such as qwen_eval.")
+        uploads = st.file_uploader("Evaluation folder", accept_multiple_files="directory", type=["csv", "md"],
+                                   key="eval_upload", label_visibility="collapsed")
+        if st.button("Show results", type="primary", disabled=not uploads, icon=":material/play_arrow:"):
+            saved = save_upload(uploads)
+            if saved is None:
+                st.error("That folder has no `<MODEL>__sycophancy_metrics__<judge>.csv` file. "
+                         "Choose the folder written by the evaluation notebook.", icon=":material/error:")
+            else:
+                st.session_state["upload"] = saved
+                st.rerun()
+        st.caption("Only .csv and .md files are taken. Wait for the upload to finish before clicking Show results. "
+                   "Uploading copies the files to the machine running this app, as a temporary copy for your session only; "
+                   "nothing is added to the code repository. To keep results entirely on your computer, run the app locally "
+                   "with your Eval folder next to app.py.")
+
+
 # ----------------------------------------------------------------------------------------------
 # 7. pages
 # ----------------------------------------------------------------------------------------------
@@ -1128,21 +1177,28 @@ def main():
     html('<div class="brand">Quantization × Sycophancy</div><div class="brand-sub">Results dashboard</div>', st.sidebar)
     st.sidebar.divider()
     html('<div class="side-label">Data</div>', st.sidebar)
-    folder = st.sidebar.text_input("Evaluation folder", value=st.session_state.get("folder", cli_dir()),
-                                   help="The folder written by the evaluation notebook (OUT_DIR).")
-    st.session_state["folder"] = folder
-    if st.sidebar.button("Rescan folder", width="stretch", icon=":material/refresh:"):
-        st.cache_data.clear()
+    uploaded = st.session_state.get("upload")
+    if uploaded:
+        folder = uploaded.name
+        st.sidebar.caption("Showing the folder you uploaded.")
+        if st.sidebar.button("Remove uploaded files", width="stretch", icon=":material/delete:"):
+            st.session_state.pop("upload").cleanup()
+            st.rerun()
+    else:
+        folder = st.sidebar.text_input("Evaluation folder", value=st.session_state.get("folder", cli_dir()),
+                                       help="A folder on the machine running the app, written by the evaluation notebook (OUT_DIR).")
+        st.session_state["folder"] = folder
+        if st.sidebar.button("Rescan folder", width="stretch", icon=":material/refresh:"):
+            st.cache_data.clear()
     found = discover(folder)
-    if found is None:
-        st.error(f"Folder not found: `{folder}`. Enter the evaluation folder in the sidebar.")
+    if not has_results(found):
+        if uploaded:                                            # the temporary copy is gone (e.g. server restart)
+            del st.session_state["upload"]
+            st.rerun()
+        upload_panel(f"Folder not found: `{folder}`" if found is None else f"No evaluation results found in `{folder}`")
         st.stop()
     runs_found, sysfiles, valid = found
     judges = sorted({j for (_, j) in runs_found})
-    if not judges:
-        st.title("Quantization × Sycophancy")
-        st.warning("No `<SLUG>__sycophancy_metrics__<judge>.csv` files found in this folder (also looked one level down).")
-        st.stop()
     st.sidebar.divider()
     html('<div class="side-label">View</div>', st.sidebar)
     judge = st.sidebar.selectbox("Judge", judges) if len(judges) > 1 else judges[0]
